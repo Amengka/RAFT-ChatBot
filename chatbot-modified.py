@@ -349,6 +349,16 @@ def ask_raft(question, vectorstore):
             logger.debug(f"Initial retrieved document metadata: {doc.metadata}")
 
     # Step 3: Check document relevance (simplified, since we're using keyword matching)
+    # def is_relevant_docs(docs, question):
+    #     embeddings = get_embeddings_model()
+    #     question_embedding = embeddings.embed_query(question)
+    #     for doc in docs:
+    #         doc_embedding = embeddings.embed_query(doc.page_content)
+    #         similarity = np.dot(question_embedding, doc_embedding) / (np.linalg.norm(question_embedding) * np.linalg.norm(doc_embedding))
+    #         logger.debug(f"Similarity with doc '{doc.page_content[:50]}...': {similarity}")
+    #         if similarity > 0.5:
+    #             return True
+    #     return False
     def is_relevant_docs(docs, question):
         # Since we're using keyword matching, assume docs are relevant if they were retrieved
         return bool(docs)
