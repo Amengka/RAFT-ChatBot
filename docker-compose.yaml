@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  f1chatbot: 
+    build: .
+    image: f1chatbot:latest
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

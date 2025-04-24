@@ -32,7 +32,11 @@ RAFT Chatbot is a Python-based conversational AI application designed to answer 
 1. **Run the Application**:
    Start the Streamlit app:
    ```bash
-   streamlit run chat14.py
+   streamlit run chatbot-modified.py
+   ```
+   To run the application using docker, run: 
+   ```
+   docker-compose up
    ```
 2. **Interact with the Chatbot**:
    - Open the app in your browser (default: `http://localhost:8501`).
