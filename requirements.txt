@@ -1,0 +1,8 @@
+streamlit
+langchain
+langchain-community
+together==1.4.6
+sentence-transformers
+chromadb
+google-search-results
+openai
