@@ -6,8 +6,6 @@ from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import Optional, List, Mapping, Any
-from langchain.tools import Tool
-from langchain_community.utilities import SerpAPIWrapper
 import numpy as np
 from datetime import datetime
 import logging
@@ -35,13 +33,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Delayed import of PyTorch-related modules to prevent Streamlit file watcher from scanning them
-def initialize_chatbot():
-    # Configure SerpAPI
-    serp_search = SerpAPIWrapper(serpapi_api_key="678e395a6c7c95e1b135322d29b35b9e7fe14712eed8900c372a31622440fbeb")
-    search_tool = Tool(name="Search", func=serp_search.run, description="Real-time internet search")
-    return search_tool
 
 # Set Together AI API key
 together.api_key = "tgp_v1_BjABj4CPzcLjXO1_xh8yg0UFLoQ1cAVjpSYyozUNTNo"
@@ -194,9 +185,6 @@ if vector_db is None:
 
 retriever = vector_db.as_retriever(search_kwargs={"k": 2})
 
-# Initialize search tool after Streamlit setup
-search_tool = initialize_chatbot()
-
 # Extract keywords from query using Prompt Engineering
 def extract_keywords(question):
     try:
@@ -319,7 +307,7 @@ def ask_raft(question, vectorstore):
     logger.info(f"Conversation history: {conversation_history}")
     logger.info(f"Current date: {current_date}")
 
-    # Step 1.1: Refine the question to generate a search query (optional, keeping for consistency)
+    # Step 1.1: Refine the question into a retrieval query
     logger.info("Step 1.1: Refine the question for retrieval")
     llm = TogetherLLM()
     refine_query_prompt = """
@@ -332,7 +320,7 @@ def ask_raft(question, vectorstore):
         question=question,
         current_date=current_date
     )).strip()
-    logger.info(f"Step 1.2: Refined search query: '{refined_query}'")
+    logger.info(f"Step 1.2: Refined retrieval query: '{refined_query}'")
 
     # Step 1.3: Extract keywords
     keywords = extract_keywords(question)
@@ -399,48 +387,9 @@ def ask_raft(question, vectorstore):
             logger.info("Step 4.2: Initial answer is sufficient, returning directly")
             return initial_answer
         else:
-            logger.info("Step 4.2: Initial answer is insufficient, proceeding to next steps")
+            logger.info("Step 4.2: Initial answer is insufficient, proceeding to the RAFT path")
 
-    # Step 5: Determine if the question is time-sensitive
-    time_sensitive_keywords = [
-        "recent", "latest", "current", "now", "today", "yesterday", "live",
-        "upcoming", "next", "right now", "recently", "just happened",
-    ]
-
-    time_sensitive_patterns = [
-        r"last\s+(week|month|year|season|event|weekend|night|morning|day|hour|minute)",
-        r"this\s+(week|month|year|season|event|weekend|morning|day)",
-        r"next\s+(week|month|year|season|event|weekend|day)",
-        r"in\s+\d{4}",
-        r"on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
-        r"(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}",
-        r"(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}",
-        r"\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)",
-        r"at\s+\d{1,2}:\d{2}",
-        r"(today|yesterday|tomorrow)\s+at",
-        r"\d{4}-\d{2}-\d{2}",
-    ]
-
-    is_time_sensitive = any(keyword in question.lower() for keyword in time_sensitive_keywords)
-    if not is_time_sensitive:
-        is_time_sensitive = any(re.search(pattern, question.lower()) for pattern in time_sensitive_patterns)
-
-    if not is_time_sensitive:
-        llm = TogetherLLM()
-        time_sensitive_prompt = f"""
-        Determine if the following question requires real-time or recent information to answer accurately.
-        Question: "{question}"
-        Current date: {current_date}
-
-        If the question is time-sensitive (e.g., asking about recent events, current rankings, or upcoming events), answer 'Yes'.
-        If the question is not time-sensitive (e.g., asking about historical facts or general knowledge), answer 'No'.
-        Provide only the answer ('Yes' or 'No'), without any reasoning.
-        """
-        time_sensitive_result = llm._call(time_sensitive_prompt).strip().lower()
-        is_time_sensitive = time_sensitive_result == "yes"
-    logger.info(f"Step 5: Is the question time-sensitive? {is_time_sensitive}")
-
-    # Step 6: Determine if the question depends on previous responses
+    # Step 5: Determine if the question depends on previous responses
     history_dependent_keywords = [
         "previous answer", "last response", "earlier question", "just now",
     ]
@@ -468,63 +417,10 @@ def ask_raft(question, vectorstore):
         """
         history_dependent_result = llm._call(history_dependent_prompt).strip().lower()
         is_history_dependent = history_dependent_result == "yes"
-    logger.info(f"Step 6: Does the question depend on history? {is_history_dependent}")
+    logger.info(f"Step 5: Does the question depend on history? {is_history_dependent}")
 
-    # Step 7: If the question is time-sensitive, prioritize using the search tool
-    if is_time_sensitive:
-        logger.info("Step 7: Detected a time-sensitive question, proceeding with search")
-        llm = TogetherLLM()
-        
-        # Generate a search query
-        search_query_prompt = """
-        Given the user question: "{question}"
-        Current date: {current_date}
-        
-        Generate a concise, natural search query to retrieve the most relevant and up-to-date information from the internet. Use key terms from the question, ensuring the query aligns with how information is presented online (e.g., for event locations, include "location" or "held"). If the question involves recent or upcoming events, include the current year (e.g., "2025") to focus on the latest events. Keep the query concise and clear to ensure search accuracy.
-        """
-        search_query = llm._call(search_query_prompt.format(question=question, current_date=current_date)).strip()
-        logger.info(f"Step 7.1: Generated search query: '{search_query}'")
-        
-        # Perform the search
-        try:
-            search_results = search_tool.run(search_query)
-            logger.info(f"Step 7.2: Search results: '{search_results}'")
-            if not search_results or (isinstance(search_results, dict) and 'error' in search_results):
-                logger.warning(f"SerpAPI returned no results or an error for query '{search_query}'")
-                fallback_query_prompt = """
-                Given the user question: "{question}"
-                Current date: {current_date}
-                
-                The initial search query '{search_query}' returned no results. Generate a broader, simplified search query to retrieve relevant information from the internet. Use core terms from the question, and if the question involves recent or upcoming events, include the current year (e.g., "2025"). Keep the query concise and natural, less than 10 words.
-                """
-                fallback_query = llm._call(fallback_query_prompt.format(question=question, current_date=current_date, search_query=search_query)).strip()
-                logger.info(f"Step 7.3: Fallback search query: '{fallback_query}'")
-                
-                search_results = search_tool.run(fallback_query)
-                logger.info(f"Step 7.4: Fallback search results: '{search_results}'")
-                if not search_results or (isinstance(search_results, dict) and 'error' in search_results):
-                    logger.warning("Step 7.5: Both initial and fallback searches failed, falling back to non-time-sensitive path")
-                    is_time_sensitive = False
-        except ValueError as e:
-            logger.warning(f"SerpAPI error: {e}, falling back to non-time-sensitive path")
-            is_time_sensitive = False
-
-        # If the search was successful, generate the answer
-        if is_time_sensitive:
-            logger.info("Step 8: Generate final answer from search results")
-            final_answer_prompt = """
-            Based on the following search results, answer the question: {question}
-            Search results: {search_results}
-            Current date: {current_date}
-            
-            Provide a direct answer, including additional relevant details about the event, such as date, location, or key participants (if applicable). Keep the answer concise and focused, limited to 3-4 sentences. If the answer is not explicitly stated, make an estimation based on the available data, or state: "Based on the provided information, I cannot determine the exact answer to '{question}'."
-            """
-            final_answer = llm._call(final_answer_prompt.format(question=question, search_results=search_results, current_date=current_date)).strip()
-            logger.info(f"Step 8.1: Final answer (from search): '{final_answer}'")
-            return final_answer
-
-    # Step 8: If not time-sensitive (or search failed), attempt to retrieve documents
-    logger.info("Step 8: Retrieve relevant documents using keyword search")
+    # Step 6: Retrieve documents for the RAFT prompt
+    logger.info("Step 6: Retrieve relevant documents using keyword search")
     retrieved_docs = keyword_search(vectorstore, keywords)
     if not retrieved_docs:
         logger.warning("No documents retrieved from keyword search.")
@@ -533,13 +429,13 @@ def ask_raft(question, vectorstore):
         for doc in retrieved_docs:
             logger.debug(f"Retrieved document metadata: {doc.metadata}")
 
-    # Step 9: Check document relevance
+    # Step 7: Check document relevance
     relevant = is_relevant_docs(retrieved_docs, question) if retrieved_docs else False
-    logger.info(f"Step 9: Are documents relevant to the question? {relevant}")
+    logger.info(f"Step 7: Are documents relevant to the question? {relevant}")
 
-    # Step 10: If documents are not relevant, fall back to LLM or search
+    # Step 8: If no relevant documents, fall back to the model's general knowledge
     if not retrieved_docs or not relevant:
-        logger.info("Step 10: No relevant documents found, falling back to LLM or search")
+        logger.info("Step 8: No relevant documents found, falling back to general knowledge")
         llm = TogetherLLM()
         
         # If the question depends on history, use a specific prompt
@@ -573,41 +469,13 @@ def ask_raft(question, vectorstore):
         logger.info(f"LLM answer (no relevant documents): '{llm_answer}'")
         
         if not llm_answer or any(phrase in llm_answer.lower() for phrase in no_answer_phrases):
-            logger.info("Step 10.1: LLM answer is insufficient, generating a search query")
-            search_query_prompt = """
-            Given the user question: "{question}"
-            Current date: {current_date}
-            
-            Generate a concise, natural search query to retrieve the most relevant and up-to-date information from the internet. Use key terms from the question, and if the question involves recent or upcoming events, include the current year (e.g., "2025"). Avoid overly detailed phrasing, keeping the query under 10 words.
-            """
-            search_query = llm._call(search_query_prompt.format(question=question, current_date=current_date)).strip()
-            logger.info(f"Generated search query: '{search_query}'")
-            
-            try:
-                search_results = search_tool.run(search_query)
-                logger.info(f"Search results: '{search_results}'")
-                if not search_results or (isinstance(search_results, dict) and 'error' in search_results):
-                    logger.warning(f"SerpAPI returned no results or an error for query '{search_query}'")
-                    return f"Unable to retrieve the latest information to answer the question '{question}', please try again later."
-            except ValueError as e:
-                logger.error(f"SerpAPI error: {e}")
-                return f"Search service error, unable to answer the question '{question}', please try again later."
-            
-            logger.info("Step 10.2: Generate final answer from search results")
-            final_answer = llm._call("""
-            Based on the following search results, answer the question: {question}
-            Search results: {search_results}
-            Current date: {current_date}
-            
-            Provide only the direct answer, without any reasoning, explanation, or thought process. If the answer is not explicitly stated, make an estimation based on the available data, or state: "Based on the provided information, I cannot determine the exact answer to '{question}'."
-            """.format(question=question, search_results=search_results, current_date=current_date))
-            logger.info(f"Final answer (from search): '{final_answer}'")
-            return final_answer
-        logger.info("Step 10.1: LLM answer is sufficient, returning directly")
+            logger.info("Step 8.1: LLM answer is insufficient and there is no corpus match")
+            return f"As of {current_date}, I do not have sufficient information to answer '{question}'."
+        logger.info("Step 8.1: LLM answer is sufficient, returning directly")
         return llm_answer
 
-    # Step 11: RAFT logic
-    logger.info("Step 11: Documents are relevant, proceeding with RAFT logic")
+    # Step 9: RAFT logic
+    logger.info("Step 9: Documents are relevant, proceeding with RAFT logic")
     mid_point = len(retrieved_docs) // 2
     golden_docs = retrieved_docs[:mid_point]
     distractor_docs = retrieved_docs[mid_point:]
@@ -672,38 +540,6 @@ def ask_raft(question, vectorstore):
     llm = TogetherLLM()
     raft_response = llm._call(raft_prompt).strip()
     logger.info(f"RAFT response: '{raft_response}'")
-
-    # Step 12: Check if RAFT response failed; if so, perform a final search
-    if not raft_response or any(phrase in raft_response.lower() for phrase in no_answer_phrases):
-        logger.info("Step 12: RAFT response is insufficient, performing a final search using the original question")
-        final_search_query = question.strip()
-        logger.info(f"Step 12.1: Final search query (using original question): '{final_search_query}'")
-        
-        try:
-            final_search_results = search_tool.run(final_search_query)
-            logger.info(f"Step 12.2: Final search results: '{final_search_results}'")
-            if not final_search_results or (isinstance(final_search_results, dict) and 'error' in search_results):
-                logger.warning(f"SerpAPI returned no results or an error for final search query '{final_search_query}'")
-                return f"Unable to retrieve the latest information to answer the question '{question}', please try again later."
-        except ValueError as e:
-            logger.error(f"SerpAPI error in final search: {e}")
-            return f"Search service error, unable to answer the question '{question}', please try again later."
-        
-        logger.info("Step 12.3: Generate final answer from search results")
-        final_answer_prompt = """
-        Based on the following search results, answer the question: {question}
-        Search results: {search_results}
-        Current date: {current_date}
-        
-        Provide a direct answer, including additional relevant details about the event, such as date, location, or key participants (if applicable). Keep the answer concise and focused, limited to 3-4 sentences. If the answer is not explicitly stated, make an estimation based on the available data, or state: "Based on the provided information, I cannot determine the exact answer to '{question}'."
-        """
-        final_answer = llm._call(final_answer_prompt.format(
-            question=question,
-            search_results=final_search_results,
-            current_date=current_date
-        )).strip()
-        logger.info(f"Step 12.4: Final answer (from final search): '{final_answer}'")
-        return final_answer
 
     return raft_response
 
