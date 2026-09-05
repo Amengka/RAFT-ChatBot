@@ -1,0 +1,28 @@
+# Secrets -- must never enter the image
+.env
+.env.*
+!.env.example
+
+# Generated vector store: mounted as a volume instead, so the image
+# does not carry a stale 13 MB copy
+chroma_db_new/
+*.sqlite3
+
+# Raw corpus: only needed to regenerate raft_documents.json, not to run
+RAG/
+
+# VCS / docs / tooling
+.git/
+.gitignore
+HANDOFF.md
+README.md
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Dead near-duplicate of chatbot-modified.py
+chat12.py
