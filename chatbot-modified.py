@@ -1,4 +1,6 @@
 import streamlit as st
+import hashlib
+import shutil
 from openai import OpenAI
 from dotenv import load_dotenv
 from langchain.memory import ConversationBufferMemory
@@ -68,13 +70,30 @@ class ChatLLM:
 logger.info(f"LLM backend: {LLM_BASE_URL} model={LLM_MODEL}")
 llm = ChatLLM()
 
-# Load RAFT dataset and merge by doc_id
+# Load the RAFT dataset as CHUNKS.
+#
+# This used to merge the chunks back into whole documents by doc_id before
+# indexing, which meant the vector store held ~95 article-level vectors instead
+# of 680 chunk-level ones -- and therefore that changing the chunking strategy
+# had no effect on system behaviour at all. The merge itself is not wrong, it
+# was in the wrong stage: see merge_chunks_by_doc_id() below.
 def load_raft_dataset(json_file_path):
     try:
         with open(json_file_path, 'r', encoding='utf-8') as f:
             raft_data = json.load(f)
-        logger.info(f"Successfully loaded RAFT dataset from {json_file_path}")
+        logger.info(f"Loaded {len(raft_data)} chunks from {json_file_path}")
+        return raft_data
+    except Exception as e:
+        logger.error(f"Failed to load RAFT dataset: {e}")
+        return []
 
+
+# The merge that used to run at index time, kept for the generation stage.
+# Retrieve small chunks, then expand to the full article before building the
+# LLM context -- this is the "parent document" baseline planned for Phase 2.
+# Not wired in yet; indexing must be chunk-level first.
+def merge_chunks_by_doc_id(raft_data):
+    try:
         merged_docs = {}
         for doc in raft_data:
             doc_id = doc["doc_id"]
@@ -109,11 +128,9 @@ def load_raft_dataset(json_file_path):
             })
 
         logger.info(f"Merged {len(raft_data)} chunks into {len(merged_data)} documents by doc_id")
-        for doc in merged_data:
-            logger.debug(f"Document {doc['doc_id']}: {doc}")
         return merged_data
     except Exception as e:
-        logger.error(f"Failed to load RAFT dataset: {e}")
+        logger.error(f"Failed to merge chunks by doc_id: {e}")
         return []
 
 # Cache embeddings model
@@ -145,40 +162,98 @@ def get_embeddings_model():
         st.error(f"初始化嵌入模型出错: {e}")
         raise
 
-# Load vector database
+PERSIST_DIRECTORY = "./chroma_db_new"
+CORPUS_FILE = "raft_documents.json"
+# Bump when the indexing scheme changes (fields embedded, metadata shape, ...)
+# so an existing store is treated as stale and rebuilt.
+INDEX_SCHEMA_VERSION = "2-chunk-level"
+
+
+def _corpus_fingerprint(raft_data):
+    """Identity of what is indexed, so a stale store can be detected."""
+    h = hashlib.sha256()
+    h.update(INDEX_SCHEMA_VERSION.encode())
+    h.update(str(len(raft_data)).encode())
+    for doc in raft_data:
+        h.update(doc["id"].encode())
+        h.update(doc["content"].encode())
+    return h.hexdigest()
+
+
+# Load vector database.
+#
+# This used to call Chroma.from_texts() unconditionally on every startup, which
+# APPENDS to the existing collection rather than loading it -- the store grew by
+# one full copy of the corpus per boot (measured: 815 -> 910 rows, +95 each time,
+# 910 rows holding only 95 unique documents). Duplicates then crowded out top-k:
+# a k=10 search returned only 4 distinct articles. Now the persisted store is
+# loaded when its fingerprint matches, and rebuilt only when absent or stale.
 @st.cache_resource
 def load_vector_db():
-    raft_data = load_raft_dataset("raft_documents.json")
+    raft_data = load_raft_dataset(CORPUS_FILE)
     if not raft_data:
         logger.error("No RAFT data loaded, vector database initialization failed.")
         return None
 
     for doc in raft_data:
         if "content" not in doc:
-            logger.error(f"Document {doc['doc_id']} is missing 'content' field: {doc}")
+            logger.error(f"Chunk {doc.get('id')} is missing 'content' field")
             return None
 
-    texts = [f"{doc['title']}\n{doc['content']}" for doc in raft_data]
-    metadatas = [
-        {
-            "doc_id": doc["doc_id"],
-            "title": doc["title"],
-            "date": doc["date"],
-            "content": doc["content"],
-            "chunk_indices": ",".join(map(str, doc["chunk_indices"]))
-        }
-        for doc in raft_data
-    ]
-
-    for meta in metadatas:
-        logger.debug(f"Metadata for document {meta['doc_id']}: {meta}")
-
+    fingerprint = _corpus_fingerprint(raft_data)
+    fingerprint_path = os.path.join(PERSIST_DIRECTORY, "corpus_fingerprint.txt")
     embeddings = get_embeddings_model()
-    persist_directory = "./chroma_db_new"
+
     try:
-        vectorstore = Chroma.from_texts(texts, embeddings, metadatas=metadatas, persist_directory=persist_directory)
-        vectorstore.persist()
-        logger.info("Vector database loaded successfully.")
+        stored = None
+        if os.path.exists(fingerprint_path):
+            with open(fingerprint_path, encoding="utf-8") as f:
+                stored = f.read().strip()
+
+        if stored == fingerprint:
+            vectorstore = Chroma(
+                persist_directory=PERSIST_DIRECTORY,
+                embedding_function=embeddings,
+            )
+            count = vectorstore._collection.count()
+            if count == len(raft_data):
+                logger.info(f"Loaded persisted vector store: {count} chunks (fingerprint match)")
+                return vectorstore
+            logger.warning(f"Fingerprint matched but count is {count}, expected {len(raft_data)}; rebuilding")
+        else:
+            logger.info("Vector store absent or stale; rebuilding")
+
+        # Rebuild from scratch. delete_collection() is not enough: Chroma soft-deletes,
+        # leaving the old segment's rows orphaned in the SQLite file, so every rebuild
+        # would grow it. Remove the directory instead -- it is a generated artifact,
+        # rebuilt from CORPUS_FILE in seconds. Guarded so it only ever removes something
+        # that actually looks like a Chroma store.
+        if os.path.exists(os.path.join(PERSIST_DIRECTORY, "chroma.sqlite3")):
+            shutil.rmtree(PERSIST_DIRECTORY)
+            logger.info(f"Removed stale vector store at {PERSIST_DIRECTORY}")
+
+        # Title is prepended per CHUNK. It used to be prepended once per merged
+        # document, so most chunks carried no title signal at all.
+        texts = [f"{doc['title']}\n{doc['content']}" for doc in raft_data]
+        metadatas = [
+            {
+                "id": doc["id"],
+                "doc_id": doc["doc_id"],
+                "chunk_index": doc["chunk_index"],
+                "title": doc["title"],
+                "date": doc["date"],
+                "content": doc["content"],
+            }
+            for doc in raft_data
+        ]
+
+        vectorstore = Chroma.from_texts(
+            texts, embeddings, metadatas=metadatas, persist_directory=PERSIST_DIRECTORY
+        )
+        os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
+        with open(fingerprint_path, "w", encoding="utf-8") as f:
+            f.write(fingerprint)
+        logger.info(f"Built vector store: {vectorstore._collection.count()} chunks")
         return vectorstore
     except Exception as e:
         logger.error(f"Failed to load vector database: {e}")
