@@ -1,11 +1,11 @@
 import streamlit as st
-import together
-from together import Together
+from openai import OpenAI
+from dotenv import load_dotenv
 from langchain.memory import ConversationBufferMemory
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import Optional, List, Mapping, Any
+from typing import Optional, List
 import numpy as np
 from datetime import datetime
 import logging
@@ -13,6 +13,8 @@ import json
 import re
 import asyncio
 import os
+
+load_dotenv()
 
 # Disable HuggingFace Tokenizers parallelism to avoid forking issues
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -34,32 +36,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Set Together AI API key
-together.api_key = "tgp_v1_BjABj4CPzcLjXO1_xh8yg0UFLoQ1cAVjpSYyozUNTNo"
 st.set_page_config(page_title="RAFT Chatbot", page_icon="🤖", layout="wide")
 
-# Custom LLM class
-class TogetherLLM:
-    model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+# LLM backend. Any OpenAI-compatible endpoint works -- Ollama (local), OpenRouter,
+# Together, Groq -- so switching provider is three env vars, not a code change.
+# See .env.example. Defaults point at a local Ollama.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1-8b-ctx8k:latest")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
-    def __init__(self):
-        self.client = Together(api_key=together.api_key)
+
+class ChatLLM:
+    """Thin wrapper over an OpenAI-compatible chat completions endpoint."""
+
+    def __init__(self, model: Optional[str] = None, temperature: Optional[float] = None):
+        self.model = model or LLM_MODEL
+        self.temperature = LLM_TEMPERATURE if temperature is None else temperature
+        self.client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
+            temperature=self.temperature,
+            stop=stop,
         )
         return response.choices[0].message.content
 
-    @property
-    def _identifying_params(self) -> Mapping[str, Any]:
-        return {"model": self.model}
 
-    @property
-    def _llm_type(self) -> str:
-        return "TogetherLLM"
+logger.info(f"LLM backend: {LLM_BASE_URL} model={LLM_MODEL}")
+llm = ChatLLM()
 
 # Load RAFT dataset and merge by doc_id
 def load_raft_dataset(json_file_path):
@@ -188,7 +195,6 @@ retriever = vector_db.as_retriever(search_kwargs={"k": 2})
 # Extract keywords from query using Prompt Engineering
 def extract_keywords(question):
     try:
-        llm = TogetherLLM()
         prompt = """
         Given the following user question: "{question}"
 
@@ -309,7 +315,6 @@ def ask_raft(question, vectorstore):
 
     # Step 1.1: Refine the question into a retrieval query
     logger.info("Step 1.1: Refine the question for retrieval")
-    llm = TogetherLLM()
     refine_query_prompt = """
     Given the user question: "{question}"
     Current date: {current_date}
@@ -364,7 +369,6 @@ def ask_raft(question, vectorstore):
             return f"Title: {title}\nContent: {content}"
 
         initial_docs_content = [format_doc_content(doc) for doc in initial_docs]
-        llm = TogetherLLM()
         initial_answer_prompt = """
         Using the following documents, answer the user's question. Provide only the direct answer, without any reasoning, explanation, or thought process. If the answer cannot be determined, explicitly state: "As of {current_date}, I do not have sufficient information to determine the answer to '{question}'."
 
@@ -406,7 +410,6 @@ def ask_raft(question, vectorstore):
         is_history_dependent = any(re.search(pattern, question.lower()) for pattern in history_dependent_patterns)
 
     if not is_history_dependent:
-        llm = TogetherLLM()
         history_dependent_prompt = f"""
         Determine if the following question explicitly references a previous answer or response in the conversation history.
         Question: "{question}"
@@ -436,7 +439,6 @@ def ask_raft(question, vectorstore):
     # Step 8: If no relevant documents, fall back to the model's general knowledge
     if not retrieved_docs or not relevant:
         logger.info("Step 8: No relevant documents found, falling back to general knowledge")
-        llm = TogetherLLM()
         
         # If the question depends on history, use a specific prompt
         if is_history_dependent:
@@ -537,7 +539,6 @@ def ask_raft(question, vectorstore):
             distractor_docs_content='\n'.join(distractor_docs_content)
         )
 
-    llm = TogetherLLM()
     raft_response = llm._call(raft_prompt).strip()
     logger.info(f"RAFT response: '{raft_response}'")
 
