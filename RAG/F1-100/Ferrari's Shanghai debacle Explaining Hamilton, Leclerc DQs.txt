@@ -1,0 +1,47 @@
+{https://www.espn.co.uk/racing/f1/story/_/id/44372906/ferraris-shanghai-debacle-explaining-lewis-hamilton-charles-leclerc-disqualifications-f1-chinese-gp}
+{Ferrari's Shanghai debacle Explaining Hamilton, Leclerc DQs}
+{Laurence Edmondson}
+{03-23-2025}
+{SHANGHAI -- The new Formula 1 season is only two races old, but Ferrari's points deficits already make for grim reading.
+
+After finishing 15 points shy of a constructors' championship at the end of last year, the Italian team is already 61 points adrift of McLaren in the team standings this season. Lewis Hamilton and Charles Leclerc are 35 and 36 points, respectively, off title favorite Lando Norris in the drivers' championship.
+
+All three of those numbers would have looked somewhat healthier had Ferrari's two cars not been disqualified from Sunday's Chinese Grand Prix for separate technical infringements. Leclerc's car was found to be 1 kilogram underweight, while Hamilton's car was disqualified for excessive plank wear as a result of running the car marginally too low to the ground.
+
+Ferrari said that "there was no intention to gain any advantage" and that the numbers involved would have come with minimal-to-zero performance benefit. But in a sport measured by thousandths of a second, there is no excuse or leeway for being on the wrong side of the regulations.
+
+Why Hamilton was disqualified
+
+The plank -- a strip of wood resin fitted to the bottom of the car -- is used by the FIA to measure how low teams are running their cars and prevent them from exploring potentially dangerous setup choices. Running a car lower can offer a performance advantage, but the lower a car is set up to run, the more the plank wears as it scrapes along the track surface.
+
+If the thickness of the plank drops below 9 millimeters at any of its four measuring points, the car is deemed illegal and will be disqualified from the results.
+
+The article in question states: "The thickness of the plank assembly measured normal to the lower surface must be 10mm [plus or minus] 0.2mm and must be uniform when new. A minimum thickness of 9mm will be accepted due to wear, and conformity to this provision will be checked at the peripheries of the designated holes."
+
+In Hamilton's case, the plank was measured in three places and found to be 0.4mm too worn on the left-hand side and 0.5mm too worn in the center and on the right. To put those numbers into context, an average quarter is 1.75 millimeters thick.
+
+The last time cars were disqualified from a race for plank wear was at the 2023 U.S. Grand Prix. Funnily enough, the two drivers in question were Hamilton, then driving for Mercedes, and Ferrari's Leclerc.
+
+In that instance, the bumpy track surface in Austin was partly to blame along with the sprint format, which in 2023 prevented teams from changing setup once Friday qualifying was underway. A recently laid and super-smooth track surface ruled out a similar excuse in Shanghai, while teams now have the opportunity to change setup between the sprint race and grand prix -- in part to prevent them being caught out.
+
+In a statement Sunday evening, Ferrari said it "misjudged the consumption [of the plank] by a small margin." The stewards' statement said the team acknowledged that there were "no mitigating circumstances and that it was a genuine error."
+
+Why Leclerc was disqualified
+
+The rules are just as black and white over car weight as they are over the thickness of the plank.
+
+The minimum weight of an F1 car, including driver but not fuel, is 800 kilograms, which must be adhered to at all times during competition. The minimum weight went up two kilos this year to allow for drivers to weigh in at 82 kg instead of 80 kg, but the same strict weigh-in applies at the end of each race.
+
+As is common practice after a race, every finisher was weighed on their return to the pits with the remaining fuel onboard. Leclerc's Ferrari and Pierre Gasly's Alpine tipped the scales at a suspiciously low 800 kg and were then drained of fuel to see if they dropped under the required threshold.
+
+Leclerc's car had crash damage to its front wing endplate from a collision with Hamilton on the opening lap of the race. Ferrari was allowed to fit an identical, undamaged wing to the car to be reweighed, but still, car No.16 was one kilo under the limit. Gasly's car also was a kilo under, and in turn, both were disqualified.
+
+Both cars were among those that completed the race with a single pit stop on a day when all teams entered the grand prix anticipating a two-stop strategy. Making the tires last longer resulted in more wear than the teams had calculated and therefore a greater loss of physical rubber from the tire. A set of F1 ties (minus rims) weigh 42 kg when new, but over a long stint can lose as much as 3 kg in wear.
+
+"Charles was on a one-stop strategy today and this meant his tire wear was very high, causing the car to be underweight," Ferrari's statement read.
+
+In contrast, Hamilton completed a two-stop strategy Sunday and therefore would have had significantly more rubber on his tires than Leclerc when he crossed the line. But it should also be pointed out that nine other cars, including Gasly's teammate, Jack Doohan, made one-stop strategies work without their cars falling under the minimum weight limit.
+
+Again, there is a recent example of a car being disqualified for the same infringement after George Russell's Mercedes was stripped of victory for being underweight at last year's Belgian Grand Prix.
+
+In total, Ferrari lost 18 points to disqualifications at Sunday's Chinese Grand Prix, a haul that would have more than doubled its current points total, which stands at 17. As painful as it might seem now for Ferrari, if the 2024 title battle with McLaren is anything to go by, it could be excruciating by the end of the year.}

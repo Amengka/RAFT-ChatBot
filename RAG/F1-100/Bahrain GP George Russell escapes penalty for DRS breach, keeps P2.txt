@@ -1,0 +1,41 @@
+{https://www.espn.com/f1/story/_/id/44658744/bahrain-gp-george-russell-escapes-penalty-drs-breach-keeps-p2}
+{Bahrain GP George Russell escapes penalty for DRS breach, keeps P2}
+{Laurence Edmondson}
+{04-13-2025}
+{George Russell has escaped a penalty and retained his second-place finish at the Bahrain Grand Prix following a post-race investigation into his incorrect use of his car's drag reduction system (DRS).
+
+Russell was in second place, behind race winner Oscar Piastri, when his car encountered a number of electronic issues, including a brake-by-wire problem and issues with the display on his steering wheel.
+
+His car also lost connection with the circuit's automated DRS activation system, which exists to ensure drivers do not use the DRS overtaking aid outside of the designated zones and when they are not within a second of the car in front.
+
+Knowing the car had lost connection with the circuit's DRS activation system, Russell was instructed by his race engineer to override the system and activate it manually if he was in range of the car in front.
+
+He was told to make use of an auxiliary button, which also serves as a back-up radio button on the steering wheel. Between Turns 10 and 11 he accidentally activated DRS as he attempted to radio his team, but quickly switched it off and lifted to compensate for any performance advantage gained.
+
+"The DRS was activated for a distance of 37 metres on a straight of approximately 700 metres," the stewards said. "Whilst he gained 0.02 seconds, he gave up 0.28 seconds at the next corner to compensate. This was confirmed by telemetry.
+
+"Accordingly whilst technically a breach occurred the Stewards decide that as there was no sporting advantage gained, no penalty is imposed."
+
+Russell said he was juggling a number of issues in the latter stages of the race as McLaren's Lando Norris closed in behind and attempted to overtake.
+
+"Yeah, it was exceptionally difficult towards the end," Russell said. "I had all sorts of problems with the car.
+
+"The steering wheel, I was losing all my data and the brake pedal went into a failure mode, so I had to do all these resets. One minute the brakes were working properly, the next they weren't. So I was pretty pleased when I saw the chequered flag, to be honest.
+
+"I don't really know how that happened [with the DRS]. It was something to do with all these failures we were having.
+
+"As soon as I saw it opened, I backed off. I lost two tenths of a second.
+
+"It never happened again throughout. I didn't actually click the DRS button -- I clicked another button and it opened. As I said, I lost a lot more than I gained -- I don't think I even gained anything because it was open for less than a second."
+
+Mercedes team principal Toto Wolff lauded Russell's performance in the face of multiple issues, underlining how difficult the car would have been to drive without a fully functioning brake-by-wire system, which activates the rear brakes.
+
+"We had a break-by-wire failure suddenly, and then it took a while to find the settings and still kind of reset it, but we did that," Wolff said.
+
+"And then, to be honest, him managing the system, coming in and out, whilst having Norris behind him -- it's just an unbelievable drive to be honest.
+
+"What he did today, he secured us this podium. On top of that, taking the soft tyre for such a long time was also great, between managing and then attacking when he needed to.
+
+"If you haven't driven a race car that has a BBW or a conventional brake, it's like on a road car with power-assisted steering. Then imagine you have to adjust between one corner having it and the next one not having it. It's just ... That was just very good skill.
+
+"So it was break-by-wire, you lost the GPS, you lost the onboard DRS. The whole lot. And I think on the dash [display], we didn't have all the things that we expected, and we also feared that we would lose the whole dash, which would have meant no buttons, no switches to turn any of the settings."}

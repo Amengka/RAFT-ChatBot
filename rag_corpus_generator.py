@@ -1,8 +1,8 @@
 import os
 import json
 
-INPUT_FOLDER = "./F1-50" # directory
-OUTPUT_FILE = "rag_documents.json"
+INPUT_FOLDER = "./RAG/F1-100" # raw source articles, see RAG/format.txt
+OUTPUT_FILE = "raft_documents.json" # name the app reads (chatbot-modified.py:153)
 CHUNK_CHAR_LIMIT = 500
 
 def parse_file(filepath, doc_number):
@@ -65,10 +65,10 @@ def process_all_articles(folder):
 
     return all_docs
 
-# main
-all_documents = process_all_articles(INPUT_FOLDER)
+if __name__ == "__main__":
+    all_documents = process_all_articles(INPUT_FOLDER)
 
-with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-    json.dump(all_documents, f, ensure_ascii=False, indent=2)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_documents, f, ensure_ascii=False, indent=2)
 
-print(f"✅ 已处理 {len(all_documents)} 个文档段落，结果保存到 {OUTPUT_FILE}")
+    print(f"✅ 已处理 {len(all_documents)} 个文档段落，结果保存到 {OUTPUT_FILE}")
