@@ -1,8 +1,14 @@
-streamlit
-langchain
-langchain-community
-together==1.4.6
-sentence-transformers
-chromadb
-google-search-results
-openai
+# Pinned to the versions in the last known-good image (built 2025-04), so that
+# "the code changed" and "5 months of upstream releases" are not debugged at the
+# same time. Upgrade deliberately, in its own commit, once the app runs green.
+
+streamlit==1.44.1
+langchain==0.3.23
+langchain-community==0.3.21
+langchain-core==0.3.55
+chromadb==1.0.5
+sentence-transformers==4.1.0
+torch==2.6.0
+transformers==4.51.3
+openai==1.75.0
+python-dotenv==1.1.0

@@ -1,0 +1,63 @@
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.key
+secrets.toml
+.streamlit/secrets.toml
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+
+# --- Generated vector store (rebuilt from raft_documents.json) ---
+chroma_db*/
+*.sqlite3
+
+# --- Model / finetuning artifacts (Phase 3) ---
+outputs/
+checkpoints/
+adapters/
+*.gguf
+*.safetensors
+*.bin
+.cache/
+wandb/
+
+# --- Eval runs ---
+eval/runs/
+*.eval.json
+
+# --- Tooling ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+# Dropbox/NTFS alternate-data-stream files that appear when copying Windows -> WSL
+*:com.dropbox.attrs
+*:Zone.Identifier
+
+# NOTE: RAG/F1-100/ (raw source articles, 95 .txt) is intentionally NOT ignored --
+# it is required input for re-chunking experiments. See HANDOFF.md.
+
+# --- Local working documents (deliberately NOT published) ---
+# Working notes and the findings log stay on this machine: this repo is a public
+# fork, and both contain candid notes about a shared project.
+HANDOFF.md
+FINDINGS.md

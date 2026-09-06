@@ -1,13 +1,13 @@
 import streamlit as st
-import together
-from together import Together
+import hashlib
+import shutil
+from openai import OpenAI
+from dotenv import load_dotenv
 from langchain.memory import ConversationBufferMemory
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import Optional, List, Mapping, Any
-from langchain.tools import Tool
-from langchain_community.utilities import SerpAPIWrapper
+from typing import Optional, List
 import numpy as np
 from datetime import datetime
 import logging
@@ -15,6 +15,8 @@ import json
 import re
 import asyncio
 import os
+
+load_dotenv()
 
 # Disable HuggingFace Tokenizers parallelism to avoid forking issues
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -36,47 +38,62 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Delayed import of PyTorch-related modules to prevent Streamlit file watcher from scanning them
-def initialize_chatbot():
-    # Configure SerpAPI
-    serp_search = SerpAPIWrapper(serpapi_api_key="678e395a6c7c95e1b135322d29b35b9e7fe14712eed8900c372a31622440fbeb")
-    search_tool = Tool(name="Search", func=serp_search.run, description="Real-time internet search")
-    return search_tool
-
-# Set Together AI API key
-together.api_key = "tgp_v1_BjABj4CPzcLjXO1_xh8yg0UFLoQ1cAVjpSYyozUNTNo"
 st.set_page_config(page_title="RAFT Chatbot", page_icon="🤖", layout="wide")
 
-# Custom LLM class
-class TogetherLLM:
-    model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+# LLM backend. Any OpenAI-compatible endpoint works -- Ollama (local), OpenRouter,
+# Together, Groq -- so switching provider is three env vars, not a code change.
+# See .env.example. Defaults point at a local Ollama.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1-8b-ctx8k:latest")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
-    def __init__(self):
-        self.client = Together(api_key=together.api_key)
+
+class ChatLLM:
+    """Thin wrapper over an OpenAI-compatible chat completions endpoint."""
+
+    def __init__(self, model: Optional[str] = None, temperature: Optional[float] = None):
+        self.model = model or LLM_MODEL
+        self.temperature = LLM_TEMPERATURE if temperature is None else temperature
+        self.client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
+            temperature=self.temperature,
+            stop=stop,
         )
         return response.choices[0].message.content
 
-    @property
-    def _identifying_params(self) -> Mapping[str, Any]:
-        return {"model": self.model}
 
-    @property
-    def _llm_type(self) -> str:
-        return "TogetherLLM"
+logger.info(f"LLM backend: {LLM_BASE_URL} model={LLM_MODEL}")
+llm = ChatLLM()
 
-# Load RAFT dataset and merge by doc_id
+# Load the RAFT dataset as CHUNKS.
+#
+# This used to merge the chunks back into whole documents by doc_id before
+# indexing, which meant the vector store held ~95 article-level vectors instead
+# of 680 chunk-level ones -- and therefore that changing the chunking strategy
+# had no effect on system behaviour at all. The merge itself is not wrong, it
+# was in the wrong stage: see merge_chunks_by_doc_id() below.
 def load_raft_dataset(json_file_path):
     try:
         with open(json_file_path, 'r', encoding='utf-8') as f:
             raft_data = json.load(f)
-        logger.info(f"Successfully loaded RAFT dataset from {json_file_path}")
+        logger.info(f"Loaded {len(raft_data)} chunks from {json_file_path}")
+        return raft_data
+    except Exception as e:
+        logger.error(f"Failed to load RAFT dataset: {e}")
+        return []
 
+
+# The merge that used to run at index time, kept for the generation stage.
+# Retrieve small chunks, then expand to the full article before building the
+# LLM context -- this is the "parent document" baseline planned for Phase 2.
+# Not wired in yet; indexing must be chunk-level first.
+def merge_chunks_by_doc_id(raft_data):
+    try:
         merged_docs = {}
         for doc in raft_data:
             doc_id = doc["doc_id"]
@@ -111,11 +128,9 @@ def load_raft_dataset(json_file_path):
             })
 
         logger.info(f"Merged {len(raft_data)} chunks into {len(merged_data)} documents by doc_id")
-        for doc in merged_data:
-            logger.debug(f"Document {doc['doc_id']}: {doc}")
         return merged_data
     except Exception as e:
-        logger.error(f"Failed to load RAFT dataset: {e}")
+        logger.error(f"Failed to merge chunks by doc_id: {e}")
         return []
 
 # Cache embeddings model
@@ -147,40 +162,98 @@ def get_embeddings_model():
         st.error(f"初始化嵌入模型出错: {e}")
         raise
 
-# Load vector database
+PERSIST_DIRECTORY = "./chroma_db_new"
+CORPUS_FILE = "raft_documents.json"
+# Bump when the indexing scheme changes (fields embedded, metadata shape, ...)
+# so an existing store is treated as stale and rebuilt.
+INDEX_SCHEMA_VERSION = "2-chunk-level"
+
+
+def _corpus_fingerprint(raft_data):
+    """Identity of what is indexed, so a stale store can be detected."""
+    h = hashlib.sha256()
+    h.update(INDEX_SCHEMA_VERSION.encode())
+    h.update(str(len(raft_data)).encode())
+    for doc in raft_data:
+        h.update(doc["id"].encode())
+        h.update(doc["content"].encode())
+    return h.hexdigest()
+
+
+# Load vector database.
+#
+# This used to call Chroma.from_texts() unconditionally on every startup, which
+# APPENDS to the existing collection rather than loading it -- the store grew by
+# one full copy of the corpus per boot (measured: 815 -> 910 rows, +95 each time,
+# 910 rows holding only 95 unique documents). Duplicates then crowded out top-k:
+# a k=10 search returned only 4 distinct articles. Now the persisted store is
+# loaded when its fingerprint matches, and rebuilt only when absent or stale.
 @st.cache_resource
 def load_vector_db():
-    raft_data = load_raft_dataset("raft_documents.json")
+    raft_data = load_raft_dataset(CORPUS_FILE)
     if not raft_data:
         logger.error("No RAFT data loaded, vector database initialization failed.")
         return None
 
     for doc in raft_data:
         if "content" not in doc:
-            logger.error(f"Document {doc['doc_id']} is missing 'content' field: {doc}")
+            logger.error(f"Chunk {doc.get('id')} is missing 'content' field")
             return None
 
-    texts = [f"{doc['title']}\n{doc['content']}" for doc in raft_data]
-    metadatas = [
-        {
-            "doc_id": doc["doc_id"],
-            "title": doc["title"],
-            "date": doc["date"],
-            "content": doc["content"],
-            "chunk_indices": ",".join(map(str, doc["chunk_indices"]))
-        }
-        for doc in raft_data
-    ]
-
-    for meta in metadatas:
-        logger.debug(f"Metadata for document {meta['doc_id']}: {meta}")
-
+    fingerprint = _corpus_fingerprint(raft_data)
+    fingerprint_path = os.path.join(PERSIST_DIRECTORY, "corpus_fingerprint.txt")
     embeddings = get_embeddings_model()
-    persist_directory = "./chroma_db_new"
+
     try:
-        vectorstore = Chroma.from_texts(texts, embeddings, metadatas=metadatas, persist_directory=persist_directory)
-        vectorstore.persist()
-        logger.info("Vector database loaded successfully.")
+        stored = None
+        if os.path.exists(fingerprint_path):
+            with open(fingerprint_path, encoding="utf-8") as f:
+                stored = f.read().strip()
+
+        if stored == fingerprint:
+            vectorstore = Chroma(
+                persist_directory=PERSIST_DIRECTORY,
+                embedding_function=embeddings,
+            )
+            count = vectorstore._collection.count()
+            if count == len(raft_data):
+                logger.info(f"Loaded persisted vector store: {count} chunks (fingerprint match)")
+                return vectorstore
+            logger.warning(f"Fingerprint matched but count is {count}, expected {len(raft_data)}; rebuilding")
+        else:
+            logger.info("Vector store absent or stale; rebuilding")
+
+        # Rebuild from scratch. delete_collection() is not enough: Chroma soft-deletes,
+        # leaving the old segment's rows orphaned in the SQLite file, so every rebuild
+        # would grow it. Remove the directory instead -- it is a generated artifact,
+        # rebuilt from CORPUS_FILE in seconds. Guarded so it only ever removes something
+        # that actually looks like a Chroma store.
+        if os.path.exists(os.path.join(PERSIST_DIRECTORY, "chroma.sqlite3")):
+            shutil.rmtree(PERSIST_DIRECTORY)
+            logger.info(f"Removed stale vector store at {PERSIST_DIRECTORY}")
+
+        # Title is prepended per CHUNK. It used to be prepended once per merged
+        # document, so most chunks carried no title signal at all.
+        texts = [f"{doc['title']}\n{doc['content']}" for doc in raft_data]
+        metadatas = [
+            {
+                "id": doc["id"],
+                "doc_id": doc["doc_id"],
+                "chunk_index": doc["chunk_index"],
+                "title": doc["title"],
+                "date": doc["date"],
+                "content": doc["content"],
+            }
+            for doc in raft_data
+        ]
+
+        vectorstore = Chroma.from_texts(
+            texts, embeddings, metadatas=metadatas, persist_directory=PERSIST_DIRECTORY
+        )
+        os.makedirs(PERSIST_DIRECTORY, exist_ok=True)
+        with open(fingerprint_path, "w", encoding="utf-8") as f:
+            f.write(fingerprint)
+        logger.info(f"Built vector store: {vectorstore._collection.count()} chunks")
         return vectorstore
     except Exception as e:
         logger.error(f"Failed to load vector database: {e}")
@@ -194,13 +267,9 @@ if vector_db is None:
 
 retriever = vector_db.as_retriever(search_kwargs={"k": 2})
 
-# Initialize search tool after Streamlit setup
-search_tool = initialize_chatbot()
-
 # Extract keywords from query using Prompt Engineering
 def extract_keywords(question):
     try:
-        llm = TogetherLLM()
         prompt = """
         Given the following user question: "{question}"
 
@@ -319,9 +388,8 @@ def ask_raft(question, vectorstore):
     logger.info(f"Conversation history: {conversation_history}")
     logger.info(f"Current date: {current_date}")
 
-    # Step 1.1: Refine the question to generate a search query (optional, keeping for consistency)
+    # Step 1.1: Refine the question into a retrieval query
     logger.info("Step 1.1: Refine the question for retrieval")
-    llm = TogetherLLM()
     refine_query_prompt = """
     Given the user question: "{question}"
     Current date: {current_date}
@@ -332,7 +400,7 @@ def ask_raft(question, vectorstore):
         question=question,
         current_date=current_date
     )).strip()
-    logger.info(f"Step 1.2: Refined search query: '{refined_query}'")
+    logger.info(f"Step 1.2: Refined retrieval query: '{refined_query}'")
 
     # Step 1.3: Extract keywords
     keywords = extract_keywords(question)
@@ -376,7 +444,6 @@ def ask_raft(question, vectorstore):
             return f"Title: {title}\nContent: {content}"
 
         initial_docs_content = [format_doc_content(doc) for doc in initial_docs]
-        llm = TogetherLLM()
         initial_answer_prompt = """
         Using the following documents, answer the user's question. Provide only the direct answer, without any reasoning, explanation, or thought process. If the answer cannot be determined, explicitly state: "As of {current_date}, I do not have sufficient information to determine the answer to '{question}'."
 
@@ -399,48 +466,9 @@ def ask_raft(question, vectorstore):
             logger.info("Step 4.2: Initial answer is sufficient, returning directly")
             return initial_answer
         else:
-            logger.info("Step 4.2: Initial answer is insufficient, proceeding to next steps")
+            logger.info("Step 4.2: Initial answer is insufficient, proceeding to the RAFT path")
 
-    # Step 5: Determine if the question is time-sensitive
-    time_sensitive_keywords = [
-        "recent", "latest", "current", "now", "today", "yesterday", "live",
-        "upcoming", "next", "right now", "recently", "just happened",
-    ]
-
-    time_sensitive_patterns = [
-        r"last\s+(week|month|year|season|event|weekend|night|morning|day|hour|minute)",
-        r"this\s+(week|month|year|season|event|weekend|morning|day)",
-        r"next\s+(week|month|year|season|event|weekend|day)",
-        r"in\s+\d{4}",
-        r"on\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
-        r"(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}",
-        r"(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}",
-        r"\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)",
-        r"at\s+\d{1,2}:\d{2}",
-        r"(today|yesterday|tomorrow)\s+at",
-        r"\d{4}-\d{2}-\d{2}",
-    ]
-
-    is_time_sensitive = any(keyword in question.lower() for keyword in time_sensitive_keywords)
-    if not is_time_sensitive:
-        is_time_sensitive = any(re.search(pattern, question.lower()) for pattern in time_sensitive_patterns)
-
-    if not is_time_sensitive:
-        llm = TogetherLLM()
-        time_sensitive_prompt = f"""
-        Determine if the following question requires real-time or recent information to answer accurately.
-        Question: "{question}"
-        Current date: {current_date}
-
-        If the question is time-sensitive (e.g., asking about recent events, current rankings, or upcoming events), answer 'Yes'.
-        If the question is not time-sensitive (e.g., asking about historical facts or general knowledge), answer 'No'.
-        Provide only the answer ('Yes' or 'No'), without any reasoning.
-        """
-        time_sensitive_result = llm._call(time_sensitive_prompt).strip().lower()
-        is_time_sensitive = time_sensitive_result == "yes"
-    logger.info(f"Step 5: Is the question time-sensitive? {is_time_sensitive}")
-
-    # Step 6: Determine if the question depends on previous responses
+    # Step 5: Determine if the question depends on previous responses
     history_dependent_keywords = [
         "previous answer", "last response", "earlier question", "just now",
     ]
@@ -457,7 +485,6 @@ def ask_raft(question, vectorstore):
         is_history_dependent = any(re.search(pattern, question.lower()) for pattern in history_dependent_patterns)
 
     if not is_history_dependent:
-        llm = TogetherLLM()
         history_dependent_prompt = f"""
         Determine if the following question explicitly references a previous answer or response in the conversation history.
         Question: "{question}"
@@ -468,63 +495,10 @@ def ask_raft(question, vectorstore):
         """
         history_dependent_result = llm._call(history_dependent_prompt).strip().lower()
         is_history_dependent = history_dependent_result == "yes"
-    logger.info(f"Step 6: Does the question depend on history? {is_history_dependent}")
+    logger.info(f"Step 5: Does the question depend on history? {is_history_dependent}")
 
-    # Step 7: If the question is time-sensitive, prioritize using the search tool
-    if is_time_sensitive:
-        logger.info("Step 7: Detected a time-sensitive question, proceeding with search")
-        llm = TogetherLLM()
-        
-        # Generate a search query
-        search_query_prompt = """
-        Given the user question: "{question}"
-        Current date: {current_date}
-        
-        Generate a concise, natural search query to retrieve the most relevant and up-to-date information from the internet. Use key terms from the question, ensuring the query aligns with how information is presented online (e.g., for event locations, include "location" or "held"). If the question involves recent or upcoming events, include the current year (e.g., "2025") to focus on the latest events. Keep the query concise and clear to ensure search accuracy.
-        """
-        search_query = llm._call(search_query_prompt.format(question=question, current_date=current_date)).strip()
-        logger.info(f"Step 7.1: Generated search query: '{search_query}'")
-        
-        # Perform the search
-        try:
-            search_results = search_tool.run(search_query)
-            logger.info(f"Step 7.2: Search results: '{search_results}'")
-            if not search_results or (isinstance(search_results, dict) and 'error' in search_results):
-                logger.warning(f"SerpAPI returned no results or an error for query '{search_query}'")
-                fallback_query_prompt = """
-                Given the user question: "{question}"
-                Current date: {current_date}
-                
-                The initial search query '{search_query}' returned no results. Generate a broader, simplified search query to retrieve relevant information from the internet. Use core terms from the question, and if the question involves recent or upcoming events, include the current year (e.g., "2025"). Keep the query concise and natural, less than 10 words.
-                """
-                fallback_query = llm._call(fallback_query_prompt.format(question=question, current_date=current_date, search_query=search_query)).strip()
-                logger.info(f"Step 7.3: Fallback search query: '{fallback_query}'")
-                
-                search_results = search_tool.run(fallback_query)
-                logger.info(f"Step 7.4: Fallback search results: '{search_results}'")
-                if not search_results or (isinstance(search_results, dict) and 'error' in search_results):
-                    logger.warning("Step 7.5: Both initial and fallback searches failed, falling back to non-time-sensitive path")
-                    is_time_sensitive = False
-        except ValueError as e:
-            logger.warning(f"SerpAPI error: {e}, falling back to non-time-sensitive path")
-            is_time_sensitive = False
-
-        # If the search was successful, generate the answer
-        if is_time_sensitive:
-            logger.info("Step 8: Generate final answer from search results")
-            final_answer_prompt = """
-            Based on the following search results, answer the question: {question}
-            Search results: {search_results}
-            Current date: {current_date}
-            
-            Provide a direct answer, including additional relevant details about the event, such as date, location, or key participants (if applicable). Keep the answer concise and focused, limited to 3-4 sentences. If the answer is not explicitly stated, make an estimation based on the available data, or state: "Based on the provided information, I cannot determine the exact answer to '{question}'."
-            """
-            final_answer = llm._call(final_answer_prompt.format(question=question, search_results=search_results, current_date=current_date)).strip()
-            logger.info(f"Step 8.1: Final answer (from search): '{final_answer}'")
-            return final_answer
-
-    # Step 8: If not time-sensitive (or search failed), attempt to retrieve documents
-    logger.info("Step 8: Retrieve relevant documents using keyword search")
+    # Step 6: Retrieve documents for the RAFT prompt
+    logger.info("Step 6: Retrieve relevant documents using keyword search")
     retrieved_docs = keyword_search(vectorstore, keywords)
     if not retrieved_docs:
         logger.warning("No documents retrieved from keyword search.")
@@ -533,14 +507,13 @@ def ask_raft(question, vectorstore):
         for doc in retrieved_docs:
             logger.debug(f"Retrieved document metadata: {doc.metadata}")
 
-    # Step 9: Check document relevance
+    # Step 7: Check document relevance
     relevant = is_relevant_docs(retrieved_docs, question) if retrieved_docs else False
-    logger.info(f"Step 9: Are documents relevant to the question? {relevant}")
+    logger.info(f"Step 7: Are documents relevant to the question? {relevant}")
 
-    # Step 10: If documents are not relevant, fall back to LLM or search
+    # Step 8: If no relevant documents, fall back to the model's general knowledge
     if not retrieved_docs or not relevant:
-        logger.info("Step 10: No relevant documents found, falling back to LLM or search")
-        llm = TogetherLLM()
+        logger.info("Step 8: No relevant documents found, falling back to general knowledge")
         
         # If the question depends on history, use a specific prompt
         if is_history_dependent:
@@ -573,41 +546,13 @@ def ask_raft(question, vectorstore):
         logger.info(f"LLM answer (no relevant documents): '{llm_answer}'")
         
         if not llm_answer or any(phrase in llm_answer.lower() for phrase in no_answer_phrases):
-            logger.info("Step 10.1: LLM answer is insufficient, generating a search query")
-            search_query_prompt = """
-            Given the user question: "{question}"
-            Current date: {current_date}
-            
-            Generate a concise, natural search query to retrieve the most relevant and up-to-date information from the internet. Use key terms from the question, and if the question involves recent or upcoming events, include the current year (e.g., "2025"). Avoid overly detailed phrasing, keeping the query under 10 words.
-            """
-            search_query = llm._call(search_query_prompt.format(question=question, current_date=current_date)).strip()
-            logger.info(f"Generated search query: '{search_query}'")
-            
-            try:
-                search_results = search_tool.run(search_query)
-                logger.info(f"Search results: '{search_results}'")
-                if not search_results or (isinstance(search_results, dict) and 'error' in search_results):
-                    logger.warning(f"SerpAPI returned no results or an error for query '{search_query}'")
-                    return f"Unable to retrieve the latest information to answer the question '{question}', please try again later."
-            except ValueError as e:
-                logger.error(f"SerpAPI error: {e}")
-                return f"Search service error, unable to answer the question '{question}', please try again later."
-            
-            logger.info("Step 10.2: Generate final answer from search results")
-            final_answer = llm._call("""
-            Based on the following search results, answer the question: {question}
-            Search results: {search_results}
-            Current date: {current_date}
-            
-            Provide only the direct answer, without any reasoning, explanation, or thought process. If the answer is not explicitly stated, make an estimation based on the available data, or state: "Based on the provided information, I cannot determine the exact answer to '{question}'."
-            """.format(question=question, search_results=search_results, current_date=current_date))
-            logger.info(f"Final answer (from search): '{final_answer}'")
-            return final_answer
-        logger.info("Step 10.1: LLM answer is sufficient, returning directly")
+            logger.info("Step 8.1: LLM answer is insufficient and there is no corpus match")
+            return f"As of {current_date}, I do not have sufficient information to answer '{question}'."
+        logger.info("Step 8.1: LLM answer is sufficient, returning directly")
         return llm_answer
 
-    # Step 11: RAFT logic
-    logger.info("Step 11: Documents are relevant, proceeding with RAFT logic")
+    # Step 9: RAFT logic
+    logger.info("Step 9: Documents are relevant, proceeding with RAFT logic")
     mid_point = len(retrieved_docs) // 2
     golden_docs = retrieved_docs[:mid_point]
     distractor_docs = retrieved_docs[mid_point:]
@@ -669,41 +614,8 @@ def ask_raft(question, vectorstore):
             distractor_docs_content='\n'.join(distractor_docs_content)
         )
 
-    llm = TogetherLLM()
     raft_response = llm._call(raft_prompt).strip()
     logger.info(f"RAFT response: '{raft_response}'")
-
-    # Step 12: Check if RAFT response failed; if so, perform a final search
-    if not raft_response or any(phrase in raft_response.lower() for phrase in no_answer_phrases):
-        logger.info("Step 12: RAFT response is insufficient, performing a final search using the original question")
-        final_search_query = question.strip()
-        logger.info(f"Step 12.1: Final search query (using original question): '{final_search_query}'")
-        
-        try:
-            final_search_results = search_tool.run(final_search_query)
-            logger.info(f"Step 12.2: Final search results: '{final_search_results}'")
-            if not final_search_results or (isinstance(final_search_results, dict) and 'error' in search_results):
-                logger.warning(f"SerpAPI returned no results or an error for final search query '{final_search_query}'")
-                return f"Unable to retrieve the latest information to answer the question '{question}', please try again later."
-        except ValueError as e:
-            logger.error(f"SerpAPI error in final search: {e}")
-            return f"Search service error, unable to answer the question '{question}', please try again later."
-        
-        logger.info("Step 12.3: Generate final answer from search results")
-        final_answer_prompt = """
-        Based on the following search results, answer the question: {question}
-        Search results: {search_results}
-        Current date: {current_date}
-        
-        Provide a direct answer, including additional relevant details about the event, such as date, location, or key participants (if applicable). Keep the answer concise and focused, limited to 3-4 sentences. If the answer is not explicitly stated, make an estimation based on the available data, or state: "Based on the provided information, I cannot determine the exact answer to '{question}'."
-        """
-        final_answer = llm._call(final_answer_prompt.format(
-            question=question,
-            search_results=final_search_results,
-            current_date=current_date
-        )).strip()
-        logger.info(f"Step 12.4: Final answer (from final search): '{final_answer}'")
-        return final_answer
 
     return raft_response
 

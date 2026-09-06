@@ -1,9 +1,19 @@
-version: '3.8'
-
 services:
-  f1chatbot: 
+  f1chatbot:
     build: .
     image: f1chatbot:latest
     ports:
       - "8501:8501"
+    environment:
+      # Ollama runs on the WSL2 host, NOT in this container, so localhost
+      # would point at the container itself. Requires the host's Ollama to
+      # listen on 0.0.0.0 (OLLAMA_HOST=0.0.0.0) -- it binds 127.0.0.1 by default.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-llama3.1-8b-ctx8k:latest}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Persist the vector store across rebuilds instead of baking it in
+      - ./chroma_db_new:/app/chroma_db_new
     restart: unless-stopped
