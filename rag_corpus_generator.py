@@ -5,6 +5,22 @@ INPUT_FOLDER = "./RAG/F1-100" # raw source articles, see RAG/format.txt
 OUTPUT_FILE = "raft_documents.json" # name the app reads (chatbot-modified.py:153)
 CHUNK_CHAR_LIMIT = 500
 
+def unwrap_delimiters(value, field, filepath):
+    """Strip the {...} that RAG/format.txt wraps every source field in.
+
+    The braces are the source layout's field delimiters, not article text. Left in,
+    they end up inside the embeddings, inside the keyword matching and inside the LLM
+    context (`Title: {Bahrain GP FIA admit...}`). Stripped here rather than downstream
+    so chunk boundaries are computed on clean text.
+
+    Only strips a matched pair, so a malformed file is reported instead of silently
+    losing its first and last character.
+    """
+    if value.startswith("{") and value.endswith("}"):
+        return value[1:-1].strip()
+    print(f"⚠️ {field} is not {{...}}-wrapped, left as is: {filepath}")
+    return value
+
 def parse_file(filepath, doc_number):
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.read().strip().splitlines()
@@ -13,11 +29,11 @@ def parse_file(filepath, doc_number):
         print(f"⚠️ Incorrect document format, skipping: {filepath}")
         return []
 
-    source = lines[0].strip()
-    title = lines[1].strip()
-    author = lines[2].strip()
-    date = lines[3].strip()
-    content = "\n".join(lines[4:]).strip()
+    source = unwrap_delimiters(lines[0].strip(), "source", filepath)
+    title = unwrap_delimiters(lines[1].strip(), "title", filepath)
+    author = unwrap_delimiters(lines[2].strip(), "author", filepath)
+    date = unwrap_delimiters(lines[3].strip(), "date", filepath)
+    content = unwrap_delimiters("\n".join(lines[4:]).strip(), "content", filepath)
 
     doc_id = f"doc_{doc_number}"
     return split_into_chunks(doc_id, source, title, author, date, content)
